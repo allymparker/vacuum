@@ -7,8 +7,9 @@ pub use context::Context;
 pub use file_system_executor::FileSystemExecutor;
 
 pub use ops::Ops;
+use std::error;
 
-fn execute_actions<E>(executor: &E, actions: &[Action])
+fn execute_actions<E>(executor: &E, actions: &[Action]) -> Result<(), Box<dyn error::Error>>
 where
     E: Ops + Context,
 {
@@ -17,21 +18,25 @@ where
             Action::Copy(filename) => executor.copy(filename),
             Action::CopyGlob(pattern) => executor.copy_glob(pattern),
             Action::Context(context, sub_actions) => {
-                let sub_contexts = match context {
+                let sub_contexts: Vec<Option<E::Context>> = match context {
                     Folder::Home => vec![executor.home()],
                     Folder::Config => vec![executor.config()],
-                    Folder::Custom(name) => vec![executor.sub(name)],
-                    Folder::Search(pattern) => executor.search(pattern),
+                    Folder::Custom(name) => vec![Some(executor.sub(name))],
+                    Folder::Search(pattern) => executor.search(pattern)?,
                 };
 
                 for sub_context in sub_contexts {
+                    if sub_context.is_none() {
+                        continue;
+                    }
                     //let sub_executor = executor.sub(sub_context);
-                    execute_actions(&sub_context, &sub_actions);
+                    execute_actions(&sub_context.unwrap(), &sub_actions)?;
                 }
             }
             Action::Execute(command) => executor.execute(command),
         }
     }
+    Ok(())
 }
 
 pub fn execute<E: Ops + Context + Default>(executor: &E, app: &crate::App) {

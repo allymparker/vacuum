@@ -1,51 +1,60 @@
 use super::context::Context;
 use super::ops::Ops;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
-pub struct FileSystemExecutor<C: Context> {
+pub struct FileSystemContext<C: Context> {
     source: C,
     target: C,
 }
 
-impl<C> FileSystemExecutor<C>
+trait Executor {}
+
+impl<C> FileSystemContext<C>
 where
     C: Context + Default,
 {
     pub fn new(target_dir: C) -> Self {
-        FileSystemExecutor {
+        FileSystemContext {
             source: C::default(),
             target: target_dir,
         }
     }
 }
 
-impl Ops for FileSystemExecutor<PathBuf> {
-    fn copy<S: AsRef<str>>(&self, file_name: S) {
+struct Executor<C>
+where
+    C: Context + Default,
+{
+    context: C,
+}
+
+impl Ops for Executor<PathBuf> {
+    fn copy<S: AsRef<str>>(&self, file_name: S) -> Result<(), Box<dyn std::error::Error>> {
         let mut source = self.source.clone();
         source.push(file_name.as_ref());
         if !source.exists() {
-            return;
+            Ok(()); // TODO think of a better return type
         }
 
         let mut destination = self.target.clone();
-        if fs::create_dir_all(destination.as_path()).is_ok() {
-            destination.push(file_name.as_ref());
-            fs::copy(source.as_path(), destination.as_path()).expect("failed to copy");
-        }
+        fs::create_dir_all(destination.as_path())?;
+        destination.push(file_name.as_ref());
+        fs::copy(source.as_path(), destination.as_path())?;
+        Ok(())
     }
 
-    fn copy_glob<S: AsRef<str>>(&self, pattern: S) {
+    fn copy_glob<S: AsRef<str>>(&self, pattern: S) -> Result<(), Box<dyn std::error::Error>> {
         let full_pattern = format!(
             "{}{}{}",
             self.source.to_str().unwrap(),
             std::path::MAIN_SEPARATOR,
             pattern.as_ref()
         );
-        for entry in glob::glob(full_pattern.as_ref()).unwrap() {
+        for entry in glob::glob(full_pattern.as_ref())? {
             if let Ok(path) = entry {
-                let current = path.strip_prefix(self.source.as_path()).unwrap();
+                let current = path.strip_prefix(self.source.as_path())?;
                 let mut destination = self.target.clone();
                 destination.push(current);
 
@@ -57,66 +66,67 @@ impl Ops for FileSystemExecutor<PathBuf> {
                 );
             }
         }
+        Ok(())
     }
 
-    fn execute<S: AsRef<str>>(&self, command: S) {
+    fn execute<S: AsRef<str>>(&self, command: S) -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "executing '{}' in {}",
             command.as_ref(),
             self.source.display()
         );
+        Ok(())
     }
 }
 
-impl Context for FileSystemExecutor<PathBuf> {
-    fn home(&self) -> Self {
-        let mut destination = self.target.clone();
-        destination.push("home");
-        FileSystemExecutor {
-            source: self.source.home(),
-            target: destination,
-        }
+impl Context for FileSystemContext<PathBuf> {
+    fn home(&self) -> Option<Self> {
+        let mut target = self.target.clone();
+        target.push("home");
+        self.source
+            .home()
+            .map(|source| FileSystemContext { source, target })
     }
 
-    fn config(&self) -> Self {
-        let mut destination = self.target.clone();
-        destination.push("config");
-        FileSystemExecutor {
-            source: self.source.config(),
-            target: destination,
-        }
+    fn config(&self) -> Option<Self> {
+        let mut target = self.target.clone();
+        target.push("config");
+        self.source
+            .config()
+            .map(|source| FileSystemContext { source, target })
     }
 
     fn sub<S: AsRef<str>>(&self, sub: S) -> Self {
-        let FileSystemExecutor {
+        let FileSystemContext {
             mut source,
             mut target,
         } = self.clone();
         source.push(sub.as_ref());
         target.push(sub.as_ref());
 
-        FileSystemExecutor { source, target }
+        FileSystemContext { source, target }
     }
 
-    fn search(&self, pattern: &str) -> Vec<Self> {
+    fn search(&self, pattern: &str) -> Result<Vec<Option<Self>>, Box<dyn std::error::Error>> {
         let mut ret = vec![];
-        let sources = self.source.search(pattern);
+        let sources = self.source.search(pattern)?;
         for source in sources {
-            let remaining = source.strip_prefix(self.source.as_path()).unwrap();
-            let mut new_destination = self.target.clone();
-            new_destination.push(remaining);
-            ret.push(FileSystemExecutor {
-                source,
-                target: new_destination,
-            })
+            if source.is_none() {
+                continue;
+            }
+            let source = source.unwrap();
+            let remaining = source.strip_prefix(self.source.as_path())?;
+            let mut target = self.target.clone();
+            target.push(remaining);
+            ret.push(Some(FileSystemContext { source, target }))
         }
-        ret
+        Ok(ret)
     }
 }
 
-impl Default for FileSystemExecutor<PathBuf> {
+impl Default for FileSystemContext<PathBuf> {
     fn default() -> Self {
-        FileSystemExecutor {
+        FileSystemContext {
             source: PathBuf::default(),
             target: PathBuf::default(),
         }
